@@ -2,74 +2,68 @@ const http = require('http');
 const { createProxyServer } = require('http-proxy');
 const axios = require('axios');
 
-// ========== CONFIGURATION ==========
 const PROXY_TARGET = process.env.PROXY_TARGET || 'http://slkbullion.com:10001';
 const BROADCAST_URL =
   process.env.BROADCAST_URL ||
   'http://bcast.suswanibullion.com:7767/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/suswani';
 
-// IMPORTANT: Set this environment variable to your actual Render URL
-const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://dollar-proxy-qs4c.onrender.com';
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com';
 
 // ========== RATE CACHE ==========
-let currentRates = {
-  gold: null,   // USD/oz
-  silver: null, // USD/oz
-  inr: null,    // USD/INR
-};
+let currentRates = { gold: null, silver: null, inr: null };
+let broadcastFailCount = 0;
+const MAX_FAILS_BEFORE_FALLBACK = 5;
 
 // ========== FETCH & PARSE BROADCAST ==========
 async function fetchBroadcastRates() {
   try {
-    const response = await axios.get(BROADCAST_URL, { timeout: 3000 });
+    const response = await axios.get(BROADCAST_URL, {
+      timeout: 4000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ShreeGoldBot/1.0)' }
+    });
     const data = response.data;
-    const rows = data.trim().split('\n');
+    // Log first 150 chars to see what we got
+    console.log('[Broadcast] Raw data:', data.substring(0, 150) + '...');
 
-    let goldPrice = null;
-    let silverPrice = null;
-    let inrRate = null;
+    const rows = data.trim().split('\n');
+    let goldPrice = null, silverPrice = null, inrRate = null;
 
     rows.forEach(row => {
       const cols = row.split('\t');
       if (cols.length < 5) return;
-
       const id = cols[0]?.trim() || '';
       const name = cols[2]?.trim() || '';
       const bid = parseFloat(cols[3]) || 0;
       const ask = parseFloat(cols[4]) || 0;
       const price = ask > 0 ? ask : bid;
 
-      // --- GOLD ---
-      if (id === '6433' || name.includes('GOLD ($)')) {
-        goldPrice = price;
-      }
-
-      // --- SILVER ---
+      if (id === '6433' || name.includes('GOLD ($)')) goldPrice = price;
       if (id === '6434' || name === '59.56' || (name.includes('SILVER') && bid < 100)) {
-        const silver = (bid > 0 && bid < 100) ? bid : (ask > 0 && ask < 100 ? ask : price);
-        silverPrice = silver;
+        silverPrice = (bid > 0 && bid < 100) ? bid : (ask > 0 && ask < 100 ? ask : price);
       }
-
-      // --- USD/INR ---
-      if (id === '6435' || name.includes('INR')) {
-        inrRate = price;
-      }
+      if (id === '6435' || name.includes('INR')) inrRate = price;
     });
 
+    // Update cache if we got at least one value
     if (goldPrice !== null) currentRates.gold = goldPrice;
     if (silverPrice !== null) currentRates.silver = silverPrice;
     if (inrRate !== null) currentRates.inr = inrRate;
 
-    console.log(`[Broadcast] Updated: GOLD=${goldPrice}, SILVER=${silverPrice}, INR=${inrRate}`);
+    // Reset fail counter on success
+    broadcastFailCount = 0;
+    console.log(`[Broadcast] ✅ Updated: GOLD=${goldPrice}, SILVER=${silverPrice}, INR=${inrRate}`);
   } catch (err) {
-    console.warn('[Broadcast] Failed, using fallback APIs if cache is empty.', err.message);
-    if (currentRates.gold === null && currentRates.silver === null && currentRates.inr === null) {
+    broadcastFailCount++;
+    console.warn(`[Broadcast] ❌ Attempt ${broadcastFailCount} failed:`, err.message);
+    // If we've failed too many times, try fallback
+    if (broadcastFailCount >= MAX_FAILS_BEFORE_FALLBACK) {
+      console.log('[Broadcast] Using fallback APIs (temporary)');
       await fetchFallbackRates();
     }
   }
 }
 
-// ========== FALLBACK APIs ==========
+// ========== FALLBACK APIs (only when broadcast is down) ==========
 async function fetchFallbackRates() {
   try {
     const [goldRes, silverRes, inrRes] = await Promise.all([
@@ -86,7 +80,7 @@ async function fetchFallbackRates() {
   }
 }
 
-// ========== START POLLING (every second) ==========
+// ========== POLLING ==========
 setInterval(fetchBroadcastRates, 1000);
 fetchBroadcastRates();
 
@@ -96,7 +90,6 @@ const proxy = createProxyServer({
   ws: true,
   changeOrigin: true,
 });
-
 proxy.on('error', (err, req, res) => {
   console.error('Proxy error:', err.message);
   if (res && !res.headersSent && res.writeHead) {
@@ -105,16 +98,12 @@ proxy.on('error', (err, req, res) => {
   }
 });
 
-// ========== MAIN HTTP SERVER ==========
 const server = http.createServer((req, res) => {
-  // Health check for Render
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
     return;
   }
-
-  // Rate API endpoint
   if (req.url === '/api/rates') {
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -123,23 +112,18 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(currentRates));
     return;
   }
-
-  // Proxy everything else
   proxy.web(req, res);
 });
 
-// WebSocket upgrades
 server.on('upgrade', (req, socket, head) => {
   proxy.ws(req, socket, head);
 });
 
-// ========== START SERVER ==========
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
   console.log(`📡 Proxy target: ${PROXY_TARGET}`);
   console.log(`📊 Rate endpoint: /api/rates`);
-  console.log(`💓 Keep-alive schedule: Mon-Fri 09:00-23:00 IST`);
 });
 
 // ========== SMART KEEP-ALIVE ==========
@@ -154,10 +138,8 @@ setInterval(async () => {
     });
     const [day, hourStr] = istString.split(', ');
     const hour = parseInt(hourStr);
-
     const isWeekday = !['Saturday', 'Sunday'].includes(day);
     const isWorkingHours = (hour >= 9 && hour <= 23);
-
     if (isWeekday && isWorkingHours) {
       await axios.get(RENDER_EXTERNAL_URL + '/health');
       console.log(`[Keep-Alive] ${day} ${hour}:00 IST - ping successful.`);
@@ -167,4 +149,4 @@ setInterval(async () => {
   } catch (err) {
     console.error('[Keep-Alive] Error:', err.message);
   }
-}, 300000); // every 5 minutes
+}, 300000);
