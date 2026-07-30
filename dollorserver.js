@@ -2,14 +2,14 @@ const http = require('http');
 const { createProxyServer } = require('http-proxy');
 const axios = require('axios');
 
-// ========== CONFIGURATION (use environment variables for flexibility) ==========
+// ========== CONFIGURATION ==========
 const PROXY_TARGET = process.env.PROXY_TARGET || 'http://slkbullion.com:10001';
 const BROADCAST_URL =
   process.env.BROADCAST_URL ||
   'http://bcast.suswanibullion.com:7767/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/suswani';
 
-// This should be set to your Render service URL (e.g., https://your-app.onrender.com)
-const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com/health';
+// IMPORTANT: Set this environment variable to your actual Render URL
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://dollar-proxy-qs4c.onrender.com';
 
 // ========== RATE CACHE ==========
 let currentRates = {
@@ -63,7 +63,6 @@ async function fetchBroadcastRates() {
     console.log(`[Broadcast] Updated: GOLD=${goldPrice}, SILVER=${silverPrice}, INR=${inrRate}`);
   } catch (err) {
     console.warn('[Broadcast] Failed, using fallback APIs if cache is empty.', err.message);
-    // Only fallback if we have no data at all
     if (currentRates.gold === null && currentRates.silver === null && currentRates.inr === null) {
       await fetchFallbackRates();
     }
@@ -89,7 +88,7 @@ async function fetchFallbackRates() {
 
 // ========== START POLLING (every second) ==========
 setInterval(fetchBroadcastRates, 1000);
-fetchBroadcastRates(); // initial fetch
+fetchBroadcastRates();
 
 // ========== PROXY SETUP ==========
 const proxy = createProxyServer({
@@ -119,7 +118,6 @@ const server = http.createServer((req, res) => {
   if (req.url === '/api/rates') {
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      // Allow cross-origin if needed (optional)
       'Access-Control-Allow-Origin': '*',
     });
     res.end(JSON.stringify(currentRates));
@@ -144,7 +142,7 @@ server.listen(PORT, () => {
   console.log(`💓 Keep-alive schedule: Mon-Fri 09:00-23:00 IST`);
 });
 
-// ========== SMART KEEP-ALIVE (prevents Render idle spin-down) ==========
+// ========== SMART KEEP-ALIVE ==========
 setInterval(async () => {
   try {
     const now = new Date();
@@ -161,7 +159,7 @@ setInterval(async () => {
     const isWorkingHours = (hour >= 9 && hour <= 23);
 
     if (isWeekday && isWorkingHours) {
-      await axios.get(RENDER_EXTERNAL_URL);
+      await axios.get(RENDER_EXTERNAL_URL + '/health');
       console.log(`[Keep-Alive] ${day} ${hour}:00 IST - ping successful.`);
     } else {
       console.log(`[Keep-Alive] ${day} ${hour}:00 IST - outside window, sleeping.`);
