@@ -16,7 +16,7 @@ let currentRates = { gold: null, silver: null, inr: null };
 let broadcastFailCount = 0;
 const MAX_FAILS_BEFORE_FALLBACK = 5;
 
-// ========== FETCH & PARSE BROADCAST ==========
+// ========== FETCH & PARSE BROADCAST (identical to your client logic) ==========
 async function fetchBroadcastRates() {
   try {
     const response = await axios.get(BROADCAST_URL, {
@@ -36,13 +36,20 @@ async function fetchBroadcastRates() {
       const name = cols[2]?.trim() || '';
       const bid = parseFloat(cols[3]) || 0;
       const ask = parseFloat(cols[4]) || 0;
-      const price = ask > 0 ? ask : bid;
+      const price = ask > 0 ? ask : bid;   // same as client
 
-      if (id === '6433' || name.includes('GOLD ($)')) goldPrice = price;
+      // --- Gold ---
+      if (id === '6433' || name.includes('GOLD ($)')) {
+        goldPrice = price;
+      }
+      // --- Silver ---
       if (id === '6434' || name === '59.56' || (name.includes('SILVER') && bid < 100)) {
         silverPrice = (bid > 0 && bid < 100) ? bid : (ask > 0 && ask < 100 ? ask : price);
       }
-      if (id === '6435' || name.includes('INR')) inrRate = price;
+      // --- USD/INR ---
+      if (id === '6435' || name.includes('INR')) {
+        inrRate = price;
+      }
     });
 
     if (goldPrice !== null) currentRates.gold = goldPrice;
@@ -61,7 +68,7 @@ async function fetchBroadcastRates() {
   }
 }
 
-// ========== FALLBACK APIs ==========
+// ========== FALLBACK APIs (public HTTPS) ==========
 async function fetchFallbackRates() {
   try {
     const [goldRes, silverRes, inrRes] = await Promise.all([
@@ -82,7 +89,7 @@ async function fetchFallbackRates() {
 setInterval(fetchBroadcastRates, 1000);
 fetchBroadcastRates();
 
-// ========== PROXY MIDDLEWARE (kept for backward compatibility) ==========
+// ========== PROXY MIDDLEWARE (kept for backward compatibility, optional) ==========
 app.use(
   '/api/broadcast',
   createProxyMiddleware({
@@ -96,7 +103,7 @@ app.use(
   })
 );
 
-// ========== RATE ENDPOINT ==========
+// ========== NEW RATE ENDPOINT ==========
 app.get('/api/rates', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.json(currentRates);
@@ -109,7 +116,7 @@ app.get('/health', (req, res) => res.status(200).send('OK'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`📡 Proxy broadcast at /api/broadcast`);
+  console.log(`📡 Proxy broadcast at /api/broadcast (legacy)`);
   console.log(`📊 Rate endpoint at /api/rates`);
 });
 
