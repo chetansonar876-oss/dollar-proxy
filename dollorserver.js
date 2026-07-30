@@ -1,20 +1,26 @@
-const http = require('http');
-const { createProxyServer } = require('http-proxy');
+require('dotenv').config();
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const axios = require('axios');
 
-const PROXY_TARGET = process.env.PROXY_TARGET || 'http://slkbullion.com:10001';
-const BROADCAST_URL =
-  process.env.BROADCAST_URL ||
-  'http://bcast.suswanibullion.com:7767/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/suswani';
+const app = express();
 
-const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com';
+// ========== CONFIGURATION ==========
+const BROADCAST_HOST = process.env.BROADCAST_HOST || 'http://bcast.suswanibullion.com';
+const BROADCAST_PORT = process.env.BROADCAST_PORT || '7767';
+const TEMPLATE_ID = process.env.TEMPLATE_ID || 'suswani';
+const BROADCAST_URL = `${BROADCAST_HOST}:${BROADCAST_PORT}/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/${TEMPLATE_ID}`;
 
 // ========== RATE CACHE ==========
-let currentRates = { gold: null, silver: null, inr: null };
+let currentRates = {
+  gold: null,   // USD/oz
+  silver: null, // USD/oz
+  inr: null,    // USD/INR
+};
 let broadcastFailCount = 0;
 const MAX_FAILS_BEFORE_FALLBACK = 5;
 
-// ========== FETCH & PARSE BROADCAST ==========
+// ========== FETCH & PARSE BROADCAST (same logic as client) ==========
 async function fetchBroadcastRates() {
   try {
     const response = await axios.get(BROADCAST_URL, {
@@ -22,7 +28,8 @@ async function fetchBroadcastRates() {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ShreeGoldBot/1.0)' }
     });
     const data = response.data;
-    // Log first 150 chars to see what we got
+
+    // Log first 150 chars to help debug
     console.log('[Broadcast] Raw data:', data.substring(0, 150) + '...');
 
     const rows = data.trim().split('\n');
@@ -37,11 +44,18 @@ async function fetchBroadcastRates() {
       const ask = parseFloat(cols[4]) || 0;
       const price = ask > 0 ? ask : bid;
 
-      if (id === '6433' || name.includes('GOLD ($)')) goldPrice = price;
+      // --- GOLD ---
+      if (id === '6433' || name.includes('GOLD ($)')) {
+        goldPrice = price;
+      }
+      // --- SILVER ---
       if (id === '6434' || name === '59.56' || (name.includes('SILVER') && bid < 100)) {
         silverPrice = (bid > 0 && bid < 100) ? bid : (ask > 0 && ask < 100 ? ask : price);
       }
-      if (id === '6435' || name.includes('INR')) inrRate = price;
+      // --- USD/INR ---
+      if (id === '6435' || name.includes('INR')) {
+        inrRate = price;
+      }
     });
 
     // Update cache if we got at least one value
@@ -55,7 +69,7 @@ async function fetchBroadcastRates() {
   } catch (err) {
     broadcastFailCount++;
     console.warn(`[Broadcast] ❌ Attempt ${broadcastFailCount} failed:`, err.message);
-    // If we've failed too many times, try fallback
+    // Only fall back after consecutive failures
     if (broadcastFailCount >= MAX_FAILS_BEFORE_FALLBACK) {
       console.log('[Broadcast] Using fallback APIs (temporary)');
       await fetchFallbackRates();
@@ -63,7 +77,7 @@ async function fetchBroadcastRates() {
   }
 }
 
-// ========== FALLBACK APIs (only when broadcast is down) ==========
+// ========== FALLBACK APIs (when broadcast is down) ==========
 async function fetchFallbackRates() {
   try {
     const [goldRes, silverRes, inrRes] = await Promise.all([
@@ -80,73 +94,62 @@ async function fetchFallbackRates() {
   }
 }
 
-// ========== POLLING ==========
+// ========== START POLLING EVERY SECOND ==========
 setInterval(fetchBroadcastRates, 1000);
-fetchBroadcastRates();
+fetchBroadcastRates(); // initial fetch
 
-// ========== PROXY SETUP ==========
-const proxy = createProxyServer({
-  target: PROXY_TARGET,
-  ws: true,
-  changeOrigin: true,
-});
-proxy.on('error', (err, req, res) => {
-  console.error('Proxy error:', err.message);
-  if (res && !res.headersSent && res.writeHead) {
-    res.writeHead(502, { 'Content-Type': 'text/plain' });
-    res.end('Proxy error: Target server unreachable');
-  }
-});
+// ========== PROXY MIDDLEWARE (for backward compatibility) ==========
+app.use(
+  '/api/broadcast',
+  createProxyMiddleware({
+    target: BROADCAST_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/api/broadcast': '' },
+    onError: (err, req, res) => {
+      console.error('Proxy error:', err.message);
+      res.status(502).send('Broadcast server unreachable');
+    }
+  })
+);
 
-const server = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('OK');
-    return;
-  }
-  if (req.url === '/api/rates') {
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-    });
-    res.end(JSON.stringify(currentRates));
-    return;
-  }
-  proxy.web(req, res);
+// ========== NEW RATE ENDPOINT ==========
+app.get('/api/rates', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json(currentRates);
 });
 
-server.on('upgrade', (req, socket, head) => {
-  proxy.ws(req, socket, head);
-});
+// ========== HEALTH CHECK ==========
+app.get('/health', (req, res) => res.status(200).send('OK'));
 
+// ========== START SERVER ==========
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`📡 Proxy target: ${PROXY_TARGET}`);
-  console.log(`📊 Rate endpoint: /api/rates`);
+  console.log(`📡 Proxy broadcast at /api/broadcast`);
+  console.log(`📊 Rate endpoint at /api/rates`);
 });
 
-// ========== SMART KEEP-ALIVE ==========
+// ========== SMART KEEP-ALIVE (Mon–Fri, 9 AM – 11:59 PM IST) ==========
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com/health';
+
 setInterval(async () => {
   try {
     const now = new Date();
-    const istString = now.toLocaleString('en-US', {
-      timeZone: 'Asia/Kolkata',
-      weekday: 'long',
-      hour: 'numeric',
-      hour12: false,
-    });
-    const [day, hourStr] = istString.split(', ');
-    const hour = parseInt(hourStr);
+    const options = { timeZone: 'Asia/Kolkata', hour12: false, weekday: 'long', hour: '2-digit' };
+    const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(now);
+    const day = parts.find(p => p.type === 'weekday').value;
+    const hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+
     const isWeekday = !['Saturday', 'Sunday'].includes(day);
     const isWorkingHours = (hour >= 9 && hour <= 23);
+
     if (isWeekday && isWorkingHours) {
-      await axios.get(RENDER_EXTERNAL_URL + '/health');
-      console.log(`[Keep-Alive] ${day} ${hour}:00 IST - ping successful.`);
+      await axios.get(RENDER_EXTERNAL_URL);
+      console.log(`[Keep-Alive] ${day} ${hour}:00 IST - Ping successful.`);
     } else {
-      console.log(`[Keep-Alive] ${day} ${hour}:00 IST - outside window, sleeping.`);
+      console.log(`[Keep-Alive] ${day} ${hour}:00 IST - Outside window, sleeping.`);
     }
   } catch (err) {
-    console.error('[Keep-Alive] Error:', err.message);
+    console.log('[Keep-Alive] Check performed (may have failed)');
   }
-}, 300000);
+}, 600000);
