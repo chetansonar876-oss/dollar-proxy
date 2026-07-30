@@ -12,37 +12,37 @@ const TEMPLATE_ID = process.env.TEMPLATE_ID || 'suswani';
 const BROADCAST_URL = `${BROADCAST_HOST}:${BROADCAST_PORT}/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/${TEMPLATE_ID}`;
 
 // ========== RATE CACHE ==========
-let currentRates = {
-  gold: null,   // USD/oz
-  silver: null, // USD/oz
-  inr: null,    // USD/INR
-};
+let currentRates = { gold: null, silver: null, inr: null };
 let broadcastFailCount = 0;
-const MAX_FAILS_BEFORE_FALLBACK = 5;
+const MAX_FAILS_BEFORE_FALLBACK = 10; // Increased to avoid quick fallback
 
-// ========== FETCH & PARSE BROADCAST (same logic as client) ==========
+// ========== FETCH & PARSE BROADCAST (exact client logic) ==========
 async function fetchBroadcastRates() {
   try {
     const response = await axios.get(BROADCAST_URL, {
-      timeout: 4000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ShreeGoldBot/1.0)' }
+      timeout: 5000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      responseType: 'text' // Ensure we get raw text
     });
+
     const data = response.data;
+    console.log('[Broadcast] Raw data (first 500 chars):', data.substring(0, 500));
 
-    // Log first 150 chars to help debug
-    console.log('[Broadcast] Raw data:', data.substring(0, 150) + '...');
-
+    // Split into lines (tab-separated)
     const rows = data.trim().split('\n');
     let goldPrice = null, silverPrice = null, inrRate = null;
 
     rows.forEach(row => {
       const cols = row.split('\t');
       if (cols.length < 5) return;
+
       const id = cols[0]?.trim() || '';
       const name = cols[2]?.trim() || '';
       const bid = parseFloat(cols[3]) || 0;
       const ask = parseFloat(cols[4]) || 0;
-      const price = ask > 0 ? ask : bid;
+      const price = ask > 0 ? ask : bid; // same as client
 
       // --- GOLD ---
       if (id === '6433' || name.includes('GOLD ($)')) {
@@ -63,13 +63,17 @@ async function fetchBroadcastRates() {
     if (silverPrice !== null) currentRates.silver = silverPrice;
     if (inrRate !== null) currentRates.inr = inrRate;
 
-    // Reset fail counter on success
-    broadcastFailCount = 0;
+    broadcastFailCount = 0; // Reset on success
     console.log(`[Broadcast] ✅ Updated: GOLD=${goldPrice}, SILVER=${silverPrice}, INR=${inrRate}`);
   } catch (err) {
     broadcastFailCount++;
     console.warn(`[Broadcast] ❌ Attempt ${broadcastFailCount} failed:`, err.message);
-    // Only fall back after consecutive failures
+    if (err.response) {
+      console.warn('[Broadcast] Response status:', err.response.status);
+      console.warn('[Broadcast] Response data:', err.response.data?.substring(0, 200));
+    }
+
+    // Only fall back after many consecutive failures
     if (broadcastFailCount >= MAX_FAILS_BEFORE_FALLBACK) {
       console.log('[Broadcast] Using fallback APIs (temporary)');
       await fetchFallbackRates();
@@ -77,7 +81,7 @@ async function fetchBroadcastRates() {
   }
 }
 
-// ========== FALLBACK APIs (when broadcast is down) ==========
+// ========== FALLBACK APIs ==========
 async function fetchFallbackRates() {
   try {
     const [goldRes, silverRes, inrRes] = await Promise.all([
@@ -94,11 +98,11 @@ async function fetchFallbackRates() {
   }
 }
 
-// ========== START POLLING EVERY SECOND ==========
+// ========== START POLLING (every second) ==========
 setInterval(fetchBroadcastRates, 1000);
-fetchBroadcastRates(); // initial fetch
+fetchBroadcastRates();
 
-// ========== PROXY MIDDLEWARE (for backward compatibility) ==========
+// ========== PROXY MIDDLEWARE (keep for backward compatibility) ==========
 app.use(
   '/api/broadcast',
   createProxyMiddleware({
@@ -112,7 +116,7 @@ app.use(
   })
 );
 
-// ========== NEW RATE ENDPOINT ==========
+// ========== RATE ENDPOINT ==========
 app.get('/api/rates', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.json(currentRates);
@@ -129,7 +133,7 @@ app.listen(PORT, () => {
   console.log(`📊 Rate endpoint at /api/rates`);
 });
 
-// ========== SMART KEEP-ALIVE (Mon–Fri, 9 AM – 11:59 PM IST) ==========
+// ========== SMART KEEP-ALIVE ==========
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com/health';
 
 setInterval(async () => {
@@ -150,6 +154,6 @@ setInterval(async () => {
       console.log(`[Keep-Alive] ${day} ${hour}:00 IST - Outside window, sleeping.`);
     }
   } catch (err) {
-    console.log('[Keep-Alive] Check performed (may have failed)');
+    console.log('[Keep-Alive] Check performed');
   }
 }, 600000);
