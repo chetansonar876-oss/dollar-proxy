@@ -1,85 +1,104 @@
-require('dotenv').config();
-const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
-const axios = require('axios');
+const http = require("http");
+const axios = require("axios");
+const { createProxyServer } = require("http-proxy");
 
-const app = express();
+// ==============================
+// TARGET SERVER
+// ==============================
+const TARGET = "http://bcast.suswanibullion.com:7767";
 
-// Read sensitive settings from environment variables
-const TARGET_HOST = process.env.BROADCAST_HOST || 'http://bcast.suswanibullion.com';
-const TARGET_PORT = process.env.BROADCAST_PORT || '7767';
-const TEMPLATE_ID = process.env.TEMPLATE_ID || 'suswani';
-
-const TARGET_URL = `${TARGET_HOST}:${TARGET_PORT}/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/${TEMPLATE_ID}`;
-
-// ----------------------------------------------
-// 1. PROXY MIDDLEWARE (main proxy)
-// ----------------------------------------------
-app.use(
-  '/api/broadcast',
-  createProxyMiddleware({
-    target: TARGET_URL,
+// ==============================
+// PROXY
+// ==============================
+const proxy = createProxyServer({
+    target: TARGET,
     changeOrigin: true,
-    pathRewrite: { '^/api/broadcast': '' },
-    // Increase timeouts to avoid premature ETIMEDOUT
-    proxyTimeout: 30000,  // 30 seconds for the whole proxy
-    timeout: 30000,       // 30 seconds for the socket
-    onError: (err, req, res) => {
-      console.error('Proxy error:', err.message);
-      res.status(502).send('Broadcast server unreachable');
-    }
-  })
-);
-
-// ----------------------------------------------
-// 2. TEST ENDPOINT – check connectivity from Render
-// ----------------------------------------------
-app.get('/test-target', async (req, res) => {
-  try {
-    const start = Date.now();
-    // Try to fetch the target URL with a 5-second timeout
-    const response = await axios.get(TARGET_URL, { timeout: 5000 });
-    res.send(`✅ Target is REACHABLE! Took ${Date.now() - start}ms. Status: ${response.status}`);
-  } catch (err) {
-    // Show the exact error code and message
-    res.status(500).send(`❌ Target UNREACHABLE. Error: ${err.code} - ${err.message}`);
-  }
+    ws: true
 });
 
-// ----------------------------------------------
-// 3. HEALTH CHECK (for Render and uptime monitors)
-// ----------------------------------------------
-app.get('/health', (req, res) => res.status(200).send('OK'));
+// Proxy Error
+proxy.on("error", (err, req, res) => {
+    console.error("Proxy Error:", err.message);
 
-// ----------------------------------------------
-// 4. START THE SERVER
-// ----------------------------------------------
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
+    if (res && !res.headersSent) {
+        res.writeHead(502, {
+            "Content-Type": "text/plain"
+        });
 
-// ----------------------------------------------
-// 5. INTERNAL KEEP‑ALIVE (optional – you can keep or remove)
-// ----------------------------------------------
-const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com/health';
-
-setInterval(async () => {
-  try {
-    const now = new Date();
-    const options = { timeZone: 'Asia/Kolkata', hour12: false, weekday: 'long', hour: '2-digit' };
-    const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(now);
-    const day = parts.find(p => p.type === 'weekday').value;
-    const hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
-
-    const isWeekday = !['Saturday', 'Sunday'].includes(day);
-    const isWorkingHours = (hour >= 9 && hour <= 23);
-
-    if (isWeekday && isWorkingHours) {
-      await axios.get(RENDER_EXTERNAL_URL);
-      console.log(`[${day} ${hour}:00 IST] Ping Successful – Server Kept Awake`);
-    } else {
-      console.log(`[${day} ${hour}:00 IST] Market Closed – Saving Render hours`);
+        res.end("Proxy Error");
     }
-  } catch (err) {
-    console.log('Keep‑Alive check performed');
-  }
-}, 600000); // every 10 minutes
+});
+
+// ==============================
+// HTTP SERVER
+// ==============================
+const server = http.createServer((req, res) => {
+
+    // Enable CORS
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+
+    if (req.method === "OPTIONS") {
+        res.writeHead(200);
+        return res.end();
+    }
+
+    // Health Check
+    if (req.url === "/health") {
+        res.writeHead(200, {
+            "Content-Type": "text/plain"
+        });
+        return res.end("OK");
+    }
+
+    console.log("Proxy Request:", req.url);
+
+    proxy.web(req, res);
+});
+
+// ==============================
+// WEBSOCKET SUPPORT
+// ==============================
+server.on("upgrade", (req, socket, head) => {
+    proxy.ws(req, socket, head);
+});
+
+// ==============================
+// START SERVER
+// ==============================
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, () => {
+    console.log("--------------------------------");
+    console.log("Bullion Broadcast Proxy Running");
+    console.log("Target :", TARGET);
+    console.log("Port   :", PORT);
+    console.log("--------------------------------");
+});
+
+// ==============================
+// KEEP ALIVE
+// ==============================
+
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
+
+if (RENDER_URL) {
+
+    setInterval(async () => {
+
+        try {
+
+            await axios.get(`${RENDER_URL}/health`);
+
+            console.log("Keep Alive Success");
+
+        } catch (err) {
+
+            console.log("Keep Alive Failed :", err.message);
+
+        }
+
+    }, 300000); // Every 5 Minutes
+
+}
