@@ -1,104 +1,172 @@
-const http = require("http");
-const axios = require("axios");
-const { createProxyServer } = require("http-proxy");
+const http = require('http');
+const { createProxyServer } = require('http-proxy');
+const axios = require('axios');
 
-// ==============================
-// TARGET SERVER
-// ==============================
-const TARGET = "http://bcast.suswanibullion.com:7767";
+// ========== CONFIGURATION (use environment variables for flexibility) ==========
+const PROXY_TARGET = process.env.PROXY_TARGET || 'http://slkbullion.com:10001';
+const BROADCAST_URL =
+  process.env.BROADCAST_URL ||
+  'http://bcast.suswanibullion.com:7767/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/suswani';
 
-// ==============================
-// PROXY
-// ==============================
-const proxy = createProxyServer({
-    target: TARGET,
-    changeOrigin: true,
-    ws: true
-});
+// This should be set to your Render service URL (e.g., https://your-app.onrender.com)
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com/health';
 
-// Proxy Error
-proxy.on("error", (err, req, res) => {
-    console.error("Proxy Error:", err.message);
+// ========== RATE CACHE ==========
+let currentRates = {
+  gold: null,   // USD/oz
+  silver: null, // USD/oz
+  inr: null,    // USD/INR
+};
 
-    if (res && !res.headersSent) {
-        res.writeHead(502, {
-            "Content-Type": "text/plain"
-        });
+// ========== FETCH & PARSE BROADCAST ==========
+async function fetchBroadcastRates() {
+  try {
+    const response = await axios.get(BROADCAST_URL, { timeout: 3000 });
+    const data = response.data;
+    const rows = data.trim().split('\n');
 
-        res.end("Proxy Error");
+    let goldPrice = null;
+    let silverPrice = null;
+    let inrRate = null;
+
+    rows.forEach(row => {
+      const cols = row.split('\t');
+      if (cols.length < 5) return;
+
+      const id = cols[0]?.trim() || '';
+      const name = cols[2]?.trim() || '';
+      const bid = parseFloat(cols[3]) || 0;
+      const ask = parseFloat(cols[4]) || 0;
+      const price = ask > 0 ? ask : bid;
+
+      // --- GOLD ---
+      if (id === '6433' || name.includes('GOLD ($)')) {
+        goldPrice = price;
+      }
+
+      // --- SILVER ---
+      if (id === '6434' || name === '59.56' || (name.includes('SILVER') && bid < 100)) {
+        const silver = (bid > 0 && bid < 100) ? bid : (ask > 0 && ask < 100 ? ask : price);
+        silverPrice = silver;
+      }
+
+      // --- USD/INR ---
+      if (id === '6435' || name.includes('INR')) {
+        inrRate = price;
+      }
+    });
+
+    if (goldPrice !== null) currentRates.gold = goldPrice;
+    if (silverPrice !== null) currentRates.silver = silverPrice;
+    if (inrRate !== null) currentRates.inr = inrRate;
+
+    console.log(`[Broadcast] Updated: GOLD=${goldPrice}, SILVER=${silverPrice}, INR=${inrRate}`);
+  } catch (err) {
+    console.warn('[Broadcast] Failed, using fallback APIs if cache is empty.', err.message);
+    // Only fallback if we have no data at all
+    if (currentRates.gold === null && currentRates.silver === null && currentRates.inr === null) {
+      await fetchFallbackRates();
     }
-});
-
-// ==============================
-// HTTP SERVER
-// ==============================
-const server = http.createServer((req, res) => {
-
-    // Enable CORS
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-
-    if (req.method === "OPTIONS") {
-        res.writeHead(200);
-        return res.end();
-    }
-
-    // Health Check
-    if (req.url === "/health") {
-        res.writeHead(200, {
-            "Content-Type": "text/plain"
-        });
-        return res.end("OK");
-    }
-
-    console.log("Proxy Request:", req.url);
-
-    proxy.web(req, res);
-});
-
-// ==============================
-// WEBSOCKET SUPPORT
-// ==============================
-server.on("upgrade", (req, socket, head) => {
-    proxy.ws(req, socket, head);
-});
-
-// ==============================
-// START SERVER
-// ==============================
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-    console.log("--------------------------------");
-    console.log("Bullion Broadcast Proxy Running");
-    console.log("Target :", TARGET);
-    console.log("Port   :", PORT);
-    console.log("--------------------------------");
-});
-
-// ==============================
-// KEEP ALIVE
-// ==============================
-
-const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
-
-if (RENDER_URL) {
-
-    setInterval(async () => {
-
-        try {
-
-            await axios.get(`${RENDER_URL}/health`);
-
-            console.log("Keep Alive Success");
-
-        } catch (err) {
-
-            console.log("Keep Alive Failed :", err.message);
-
-        }
-
-    }, 300000); // Every 5 Minutes
-
+  }
 }
+
+// ========== FALLBACK APIs ==========
+async function fetchFallbackRates() {
+  try {
+    const [goldRes, silverRes, inrRes] = await Promise.all([
+      axios.get('https://api.gold-api.com/price/XAU', { timeout: 5000 }),
+      axios.get('https://api.gold-api.com/price/XAG', { timeout: 5000 }),
+      axios.get('https://api.exchangerate-api.com/v4/latest/USD', { timeout: 5000 }),
+    ]);
+    currentRates.gold = goldRes.data.price;
+    currentRates.silver = silverRes.data.price;
+    currentRates.inr = inrRes.data.rates.INR;
+    console.log('[Fallback] Updated rates from public APIs.');
+  } catch (e) {
+    console.error('[Fallback] All APIs failed:', e.message);
+  }
+}
+
+// ========== START POLLING (every second) ==========
+setInterval(fetchBroadcastRates, 1000);
+fetchBroadcastRates(); // initial fetch
+
+// ========== PROXY SETUP ==========
+const proxy = createProxyServer({
+  target: PROXY_TARGET,
+  ws: true,
+  changeOrigin: true,
+});
+
+proxy.on('error', (err, req, res) => {
+  console.error('Proxy error:', err.message);
+  if (res && !res.headersSent && res.writeHead) {
+    res.writeHead(502, { 'Content-Type': 'text/plain' });
+    res.end('Proxy error: Target server unreachable');
+  }
+});
+
+// ========== MAIN HTTP SERVER ==========
+const server = http.createServer((req, res) => {
+  // Health check for Render
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('OK');
+    return;
+  }
+
+  // Rate API endpoint
+  if (req.url === '/api/rates') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      // Allow cross-origin if needed (optional)
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify(currentRates));
+    return;
+  }
+
+  // Proxy everything else
+  proxy.web(req, res);
+});
+
+// WebSocket upgrades
+server.on('upgrade', (req, socket, head) => {
+  proxy.ws(req, socket, head);
+});
+
+// ========== START SERVER ==========
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`📡 Proxy target: ${PROXY_TARGET}`);
+  console.log(`📊 Rate endpoint: /api/rates`);
+  console.log(`💓 Keep-alive schedule: Mon-Fri 09:00-23:00 IST`);
+});
+
+// ========== SMART KEEP-ALIVE (prevents Render idle spin-down) ==========
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const istString = now.toLocaleString('en-US', {
+      timeZone: 'Asia/Kolkata',
+      weekday: 'long',
+      hour: 'numeric',
+      hour12: false,
+    });
+    const [day, hourStr] = istString.split(', ');
+    const hour = parseInt(hourStr);
+
+    const isWeekday = !['Saturday', 'Sunday'].includes(day);
+    const isWorkingHours = (hour >= 9 && hour <= 23);
+
+    if (isWeekday && isWorkingHours) {
+      await axios.get(RENDER_EXTERNAL_URL);
+      console.log(`[Keep-Alive] ${day} ${hour}:00 IST - ping successful.`);
+    } else {
+      console.log(`[Keep-Alive] ${day} ${hour}:00 IST - outside window, sleeping.`);
+    }
+  } catch (err) {
+    console.error('[Keep-Alive] Error:', err.message);
+  }
+}, 300000); // every 5 minutes
