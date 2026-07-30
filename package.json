@@ -1,16 +1,15 @@
 {
-  "name": "bullion-proxy-server",
+  "name": "dollar-proxy",
   "version": "1.0.0",
-  "description": "Proxy + Rate server for bullion rates with smart keep-alive",
-  "main": "server.js",
+  "description": "Proxy + Rate fetcher with fallback",
+  "main": "dollorserver.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node dollorserver.js"
   },
   "dependencies": {
-    "http-proxy": "^1.18.1",
-    "axios": "^1.6.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^2.0.6"
   }
 }
