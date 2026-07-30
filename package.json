@@ -1,7 +1,7 @@
 {
   "name": "dollar-proxy",
   "version": "1.0.0",
-  "description": "Proxy + Rate fetcher with fallback",
+  "description": "Proxy to hide broadcast server details",
   "main": "dollorserver.js",
   "scripts": {
     "start": "node dollorserver.js"
