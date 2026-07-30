@@ -14,66 +14,46 @@ const BROADCAST_URL = `${BROADCAST_HOST}:${BROADCAST_PORT}/VOTSBroadcastStreamin
 // ========== RATE CACHE ==========
 let currentRates = { gold: null, silver: null, inr: null };
 let broadcastFailCount = 0;
-const MAX_FAILS_BEFORE_FALLBACK = 10; // Increased to avoid quick fallback
+const MAX_FAILS_BEFORE_FALLBACK = 5;
 
-// ========== FETCH & PARSE BROADCAST (exact client logic) ==========
+// ========== FETCH & PARSE BROADCAST ==========
 async function fetchBroadcastRates() {
   try {
     const response = await axios.get(BROADCAST_URL, {
-      timeout: 5000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      },
-      responseType: 'text' // Ensure we get raw text
+      timeout: 4000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ShreeGoldBot/1.0)' }
     });
-
     const data = response.data;
-    console.log('[Broadcast] Raw data (first 500 chars):', data.substring(0, 500));
+    console.log('[Broadcast] Raw data (first 200 chars):', data.substring(0, 200));
 
-    // Split into lines (tab-separated)
     const rows = data.trim().split('\n');
     let goldPrice = null, silverPrice = null, inrRate = null;
 
     rows.forEach(row => {
       const cols = row.split('\t');
       if (cols.length < 5) return;
-
       const id = cols[0]?.trim() || '';
       const name = cols[2]?.trim() || '';
       const bid = parseFloat(cols[3]) || 0;
       const ask = parseFloat(cols[4]) || 0;
-      const price = ask > 0 ? ask : bid; // same as client
+      const price = ask > 0 ? ask : bid;
 
-      // --- GOLD ---
-      if (id === '6433' || name.includes('GOLD ($)')) {
-        goldPrice = price;
-      }
-      // --- SILVER ---
+      if (id === '6433' || name.includes('GOLD ($)')) goldPrice = price;
       if (id === '6434' || name === '59.56' || (name.includes('SILVER') && bid < 100)) {
         silverPrice = (bid > 0 && bid < 100) ? bid : (ask > 0 && ask < 100 ? ask : price);
       }
-      // --- USD/INR ---
-      if (id === '6435' || name.includes('INR')) {
-        inrRate = price;
-      }
+      if (id === '6435' || name.includes('INR')) inrRate = price;
     });
 
-    // Update cache if we got at least one value
     if (goldPrice !== null) currentRates.gold = goldPrice;
     if (silverPrice !== null) currentRates.silver = silverPrice;
     if (inrRate !== null) currentRates.inr = inrRate;
 
-    broadcastFailCount = 0; // Reset on success
+    broadcastFailCount = 0;
     console.log(`[Broadcast] ✅ Updated: GOLD=${goldPrice}, SILVER=${silverPrice}, INR=${inrRate}`);
   } catch (err) {
     broadcastFailCount++;
     console.warn(`[Broadcast] ❌ Attempt ${broadcastFailCount} failed:`, err.message);
-    if (err.response) {
-      console.warn('[Broadcast] Response status:', err.response.status);
-      console.warn('[Broadcast] Response data:', err.response.data?.substring(0, 200));
-    }
-
-    // Only fall back after many consecutive failures
     if (broadcastFailCount >= MAX_FAILS_BEFORE_FALLBACK) {
       console.log('[Broadcast] Using fallback APIs (temporary)');
       await fetchFallbackRates();
@@ -102,7 +82,7 @@ async function fetchFallbackRates() {
 setInterval(fetchBroadcastRates, 1000);
 fetchBroadcastRates();
 
-// ========== PROXY MIDDLEWARE (keep for backward compatibility) ==========
+// ========== PROXY MIDDLEWARE (kept for backward compatibility) ==========
 app.use(
   '/api/broadcast',
   createProxyMiddleware({
@@ -134,7 +114,7 @@ app.listen(PORT, () => {
 });
 
 // ========== SMART KEEP-ALIVE ==========
-const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://your-app-name.onrender.com/health';
+const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://dollar-proxy-qs4c.onrender.com/health';
 
 setInterval(async () => {
   try {
