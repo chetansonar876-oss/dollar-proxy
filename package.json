@@ -1,15 +1,49 @@
 {
   "name": "dollar-proxy",
-  "version": "1.0.0",
-  "description": "Proxy to hide broadcast server details",
+  "version": "2.0.0",
+  "description": "Secure proxy server that hides broadcast server IP, port, and template ID from the frontend.",
   "main": "dollorserver.js",
-  "scripts": {
-    "start": "node dollorserver.js"
+  "engines": {
+    "node": ">=18.0.0"
   },
+  "scripts": {
+    "start": "node dollorserver.js",
+    "dev": "nodemon dollorserver.js",
+    "lint": "eslint .",
+    "prettier": "prettier --write .",
+    "security-check": "npm audit"
+  },
+  "keywords": [
+    "proxy",
+    "secure-proxy",
+    "broadcast",
+    "gold-rates",
+    "silver-rates",
+    "render",
+    "api-gateway"
+  ],
+  "author": {
+    "name": "Your Name",
+    "email": "your-email@example.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/dollar-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/dollar-proxy/issues"
+  },
+  "homepage": "https://github.com/your-username/dollar-proxy#readme",
   "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "http-proxy-middleware": "^2.0.6"
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^2.0.7"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "nodemon": "^3.1.3",
+    "prettier": "^3.3.2"
   }
 }
